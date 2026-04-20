@@ -38,6 +38,4 @@ export const parseSheetNumber = (val: any) => {
   return isNaN(parsed) ? 0 : parsed;
 };
 
-export const sheets = google.sheets('v4');
 export { SHEET_ID };
-export const getCleanAuth as getAuthHelpers };
