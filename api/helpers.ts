@@ -1,19 +1,8 @@
 import { google } from 'googleapis';
-import fs from 'fs';
-import path from 'path';
 
 const SHEET_ID = process.env.GOOGLE_SHEET_ID || '1yTp-53mSv89l3LALHDlYevqeYk2AqhwUc8CiCBEN7ss';
 
 const getCleanAuth = async () => {
-  try {
-    const saJsonPath = path.join(process.cwd(), 'sneeker-guy-v3-d4f33535e63e.json');
-    if (fs.existsSync(saJsonPath)) {
-      const saData = JSON.parse(fs.readFileSync(saJsonPath, 'utf-8'));
-      return { clientEmail: saData.client_email, privateKey: saData.private_key };
-    }
-  } catch (e) {
-    console.error('[Auth] Error:', e);
-  }
   let clientEmail = (process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL || '').trim();
   let rawKeyInput = process.env.GOOGLE_PRIVATE_KEY || '';
   let privateKey = rawKeyInput.includes('\\n') ? rawKeyInput.replace(/\\n/g, '\n') : rawKeyInput;
