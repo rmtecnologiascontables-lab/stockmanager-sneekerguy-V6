@@ -9,7 +9,13 @@ import multer from 'multer';
 import { Readable } from 'stream';
 import { v2 as cloudinary } from 'cloudinary';
 
-dotenv.config();
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+dotenv.config({ path: path.resolve(__dirname, '.env') });
+
+console.log('[DEBUG] GOOGLE_SERVICE_ACCOUNT_EMAIL:', process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL ? 'CARGADO' : 'VACIO');
+console.log('[DEBUG] GOOGLE_PRIVATE_KEY长度:', process.env.GOOGLE_PRIVATE_KEY ? process.env.GOOGLE_PRIVATE_KEY.length : 0);
 
 // Configure Cloudinary
 cloudinary.config({
@@ -18,12 +24,9 @@ cloudinary.config({
   api_secret: process.env.CLOUDINARY_API_SECRET,
 });
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-
 async function startServer() {
   const app = express();
-  const PORT = 3000;
+  const PORT = Number(process.env.PORT) || 3000;
 
   app.use(express.json());
 
@@ -65,67 +68,35 @@ async function startServer() {
   // Google Sheets Auth Setup
   const SHEET_ID = process.env.GOOGLE_SHEET_ID || '1yTp-53mSv89l3LALHDlYevqeYk2AqhwUc8CiCBEN7ss';
   
-  const getCleanAuth = () => {
-    // 1. Raw Inputs
-    const rawEmailInput = (process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL || '').trim();
-    const rawKeyInput = (process.env.GOOGLE_PRIVATE_KEY || '').trim();
-
-    let clientEmail = '';
-    let privateKey = '';
-
-    // 2. Super-Intelligence: Scan both inputs
-    const scanInput = (input: string) => {
-      // Priority 1: JSON structure
-      try {
-        const cleaned = input.replace(/^[^{]*/, '').replace(/[^}]*$/, ''); 
-        if (cleaned.startsWith('{')) {
-          const parsed = JSON.parse(cleaned);
-          if (parsed.client_email) clientEmail = parsed.client_email.trim();
-          if (parsed.private_key) privateKey = parsed.private_key.trim();
-        }
-      } catch (e) {}
-
-      // Priority 2: Regex patterns (only if not found in JSON yet)
-      if (!clientEmail) {
-        // Look for typical service account email pattern
-        const emailMatch = input.match(/[a-zA-Z0-9\._%\+\-]+@[a-zA-Z0-9\.\-]+\.[a-zA-Z]{2,}/);
-        if (emailMatch) clientEmail = emailMatch[0].trim();
+  const getCleanAuth = async () => {
+    try {
+      const saJsonPath = path.join(__dirname, 'sneeker-guy-v3-d4f33535e63e.json');
+      
+      if (fs.existsSync(saJsonPath)) {
+        const saData = JSON.parse(fs.readFileSync(saJsonPath, 'utf-8'));
+        console.log('[Auth] Using service-account.json');
+        console.log('[Auth] Email:', saData.client_email?.substring(0, 15) + '...');
+        return {
+          clientEmail: saData.client_email,
+          privateKey: saData.private_key
+        };
       }
-      if (!privateKey) {
-        const keyMatch = input.match(/-----BEGIN .*?-----([\s\S]*?)-----END .*?-----/);
-        if (keyMatch) privateKey = keyMatch[0].trim();
-      }
-    };
-
-    scanInput(rawKeyInput); // Scan key first (often has the full JSON)
-    scanInput(rawEmailInput); // Then scan email (might override or fill)
-
-    // 3. Ultra-Sanitization for Email: Remove invisible chars and quotes
-    clientEmail = clientEmail
-      .replace(/[\u200B-\u200D\uFEFF]/g, '') // Invisible chars
-      .replace(/^["']|["']$/g, '') // Quotes
-      .replace(/\s/g, '') // Remove ANY whitespace remaining
-      .trim();
-
-    // 4. Final Sanitization for Private Key
-    if (privateKey) {
-      const bodyMatch = privateKey.match(/-----BEGIN .*?-----([\s\S]*?)-----END .*?-----/);
-      if (bodyMatch) {
-        const body = bodyMatch[1].replace(/\\n/g, '').replace(/[^A-Za-z0-9+/=]/g, '');
-        const chunks = body.match(/.{1,64}/g);
-        if (chunks) privateKey = `-----BEGIN PRIVATE KEY-----\n${chunks.join('\n')}\n-----END PRIVATE KEY-----\n`;
-      }
-    } else if (rawKeyInput.length > 500) {
-      const body = rawKeyInput.replace(/\\n/g, '').replace(/[^A-Za-z0-9+/=]/g, '');
-      const chunks = body.match(/.{1,64}/g);
-      if (chunks) privateKey = `-----BEGIN PRIVATE KEY-----\n${chunks.join('\n')}\n-----END PRIVATE KEY-----\n`;
+    } catch (e) {
+      console.error('[Auth] Error reading service-account.json:', e.message);
     }
+
+    // Fallback to env vars
+    let clientEmail = (process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL || '').trim();
+    let rawKeyInput = process.env.GOOGLE_PRIVATE_KEY || '';
+    let privateKey = rawKeyInput.includes('\\n') 
+      ? rawKeyInput.replace(/\\n/g, '\n')
+      : rawKeyInput;
 
     return { clientEmail, privateKey };
   };
 
-  const getAuthClient = () => {
-    const { clientEmail, privateKey } = getCleanAuth();
+  const getAuthClient = async () => {
+    const { clientEmail, privateKey } = await getCleanAuth();
 
     if (!clientEmail || !privateKey) {
       console.warn('[Auth Error] Credenciales incompletas.');
@@ -209,8 +180,8 @@ async function startServer() {
 
   app.get('/api/health-check', async (req, res) => {
     try {
-      const { clientEmail } = getCleanAuth();
-      const auth = getAuthClient();
+      const { clientEmail } = await getCleanAuth();
+      const auth = await getAuthClient();
       if (!auth) {
         return res.status(401).json({ 
           status: 'error', 
@@ -229,7 +200,7 @@ async function startServer() {
         account: clientEmail ? `${clientEmail.substring(0, 4)}...${clientEmail.split('@')[1]}` : '?'
       });
     } catch (error: any) {
-      const { clientEmail } = getCleanAuth();
+      const { clientEmail } = await getCleanAuth();
       console.error('Connectivity test failed:', error);
       res.status(500).json({ 
         status: 'error', 
@@ -244,7 +215,7 @@ async function startServer() {
 
   app.get('/api/customers', async (req, res) => {
     try {
-      const auth = getAuthClient();
+      const auth = await getAuthClient();
       if (!auth) return res.status(500).json({ error: 'Auth failed' });
       
       const response = await sheets.spreadsheets.values.get({
@@ -279,7 +250,7 @@ async function startServer() {
 
   app.get('/api/products', async (req, res) => {
     try {
-      const auth = getAuthClient();
+      const auth = await getAuthClient();
       if (!auth) {
         return res.status(500).json({ error: 'Google Sheets credentials not configured' });
       }
@@ -287,7 +258,7 @@ async function startServer() {
       const response = await sheets.spreadsheets.values.get({
         auth,
         spreadsheetId: SHEET_ID,
-        range: "'MASTER_DATA'!A2:AN", // Extended to include Category hierarchy Columns
+        range: "'MASTER_DATA'!A2:AL", // Extended to include AJ, AK and Card AL
       });
 
       const rows = response.data.values;
@@ -336,9 +307,7 @@ async function startServer() {
           totalBuyPriceUsd: parseSheetNumber(row[35]), // TOTAL_COSTO_USD (AJ)
           totalBuyPriceMxn: parseSheetNumber(row[36]), // TOTAL_COSTO_MXN (AK)
           card: row[37] || '', // TARJETA_PAGO (AL)
-          subcategory: row[38] || '', // SUBCATEGORIA (AM)
-          tags: row[39] ? row[39].split(',').map((t: string) => t.trim()) : [], // TAGS (AN)
-          quantity: 1, 
+          quantity: 1, // Quantity not in sheet yet, defaulting to 1
           brand: '',
           updatedAt: new Date().toISOString(),
         };
@@ -353,7 +322,7 @@ async function startServer() {
 
   app.post('/api/products', async (req, res) => {
     try {
-      const auth = getAuthClient();
+      const auth = await getAuthClient();
       if (!auth) {
         return res.status(500).json({ error: 'Google Sheets credentials not configured' });
       }
@@ -362,7 +331,7 @@ async function startServer() {
       const productsArray = Array.isArray(body) ? body : [body];
       
       const rowsToAppend = productsArray.map((p, idx) => {
-        const rowSize = 40; // A to AN (index 39)
+        const rowSize = 38; // A to AL
         const rowData = new Array(rowSize).fill('');
         
         // Fill known columns from the provided structure (sneeker_guy_datasheet_v3_Line)
@@ -404,8 +373,6 @@ async function startServer() {
         rowData[35] = p.totalBuyPriceUsd || 0; // TOTAL_COSTO_USD (AJ)
         rowData[36] = p.totalBuyPriceMxn || 0; // TOTAL_COSTO_MXN (AK)
         rowData[37] = p.card || ''; // TARJETA_PAGO (AL)
-        rowData[38] = p.subcategory || ''; // SUBCATEGORIA (AM)
-        rowData[39] = p.tags ? p.tags.join(', ') : ''; // TAGS (AN)
         
         return rowData;
       });
@@ -427,7 +394,7 @@ async function startServer() {
 
   app.put('/api/products/:id', async (req, res) => {
     try {
-      const auth = getAuthClient();
+      const auth = await getAuthClient();
       if (!auth) return res.status(500).json({ error: 'Auth failed' });
       
       const { id } = req.params;
@@ -448,7 +415,7 @@ async function startServer() {
       }
 
       const rowNum = rowIndex + 1;
-      const rowSize = 40; // Up to AN
+      const rowSize = 38; // Up to AL
       const rowData = new Array(rowSize).fill('');
       
       // Re-align with user's datasheet structure (sneeker_guy_datasheet_v3_Line)
@@ -490,8 +457,6 @@ async function startServer() {
       rowData[35] = p.totalBuyPriceUsd || 0; // TOTAL_COSTO_USD (AJ)
       rowData[36] = p.totalBuyPriceMxn || 0; // TOTAL_COSTO_MXN (AK)
       rowData[37] = p.card || ''; // TARJETA_PAGO (AL)
-      rowData[38] = p.subcategory || ''; // SUBCATEGORIA (AM)
-      rowData[39] = p.tags ? p.tags.join(', ') : ''; // TAGS (AN)
 
       await sheets.spreadsheets.values.update({
         auth,
@@ -510,13 +475,13 @@ async function startServer() {
 
   app.post('/api/orders', async (req, res) => {
     try {
-      const auth = getAuthClient();
+      const auth = await getAuthClient();
       if (!auth) {
         return res.status(500).json({ error: 'Google Sheets credentials not configured' });
       }
 
       const order = req.body;
-      const rowSize = 17; // A to Q
+      const rowSize = 12; // A to L
       const rowData = new Array(rowSize).fill('');
       
       // Map to CLIENTES tab structure
@@ -532,11 +497,6 @@ async function startServer() {
       rowData[9] = 0; // TOTAL_COMPRADO (Initial)
       rowData[10] = order.notas || ''; // NOTAS
       rowData[11] = order.tipo_de_pago || 'Efectivo/Transferencia'; // TIPO_DE_PAGO
-      rowData[12] = order.prioridad || 'Normal'; // PRIORIDAD (M)
-      rowData[13] = order.status || 'Pendiente'; // STATUS (N)
-      rowData[14] = order.modelo_seleccionado || ''; // MODELO (O)
-      rowData[15] = order.talla || ''; // TALLA (P)
-      rowData[16] = order.cantidad || 1; // CANTIDAD (Q)
 
       await sheets.spreadsheets.values.append({
         auth,
@@ -567,6 +527,10 @@ async function startServer() {
       res.sendFile(path.join(distPath, 'index.html'));
     });
   }
+
+  app.get('/health', (req, res) => {
+    res.json({ status: 'ok', timestamp: new Date().toISOString() });
+  });
 
   app.listen(PORT, '0.0.0.0', () => {
     console.log(`Server running on http://localhost:${PORT}`);

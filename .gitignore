@@ -6,3 +6,6 @@ coverage/
 *.log
 .env*
 !.env.example
+sneeker-guy-v3-*.json
+
+.vercel

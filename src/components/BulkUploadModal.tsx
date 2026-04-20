@@ -1,7 +1,7 @@
 import React from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { X, Upload, FileJson, FileSpreadsheet, AlertCircle, CheckCircle2, Loader2, FileText } from 'lucide-react';
-import * as XLSX from 'xlsx';
+import ExcelJS from 'exceljs';
 import { Product, OrderStatus } from '../types';
 import { cn } from '../lib/utils';
 
@@ -42,9 +42,18 @@ export function BulkUploadModal({ onUpload, onClose }: BulkUploadModalProps) {
         setParsedData(Array.isArray(data) ? data : [data]);
       } else if (['xlsx', 'xls', 'csv'].includes(extension || '')) {
         const data = await file.arrayBuffer();
-        const workbook = XLSX.read(data);
-        const worksheet = workbook.Sheets[workbook.SheetNames[0]];
-        const jsonData = XLSX.utils.sheet_to_json(worksheet);
+        const workbook = new ExcelJS.Workbook();
+        await workbook.xlsx.load(data);
+        const worksheet = workbook.getWorksheet(1);
+        const jsonData: any[] = [];
+        worksheet?.eachRow((row, rowNumber) => {
+          if (rowNumber === 1) return; // Skip header
+          const obj: any = {};
+          worksheet?.getRow(1).eachCell((cell, colNumber) => {
+            obj[cell.value?.toString() || ''] = row.getCell(colNumber).value;
+          });
+          jsonData.push(obj);
+        });
         setParsedData(jsonData);
       } else if (extension === 'pdf') {
         // PDF parsing usually requires more than just frontend logic or complex libraries
